@@ -134,17 +134,26 @@ export class StrokeCanvas {
 	}
 
 	private setupEvents(): void {
+		// Use pointerdown to detect pen vs touch, then capture pen events
 		this.canvas.addEventListener("pointerdown", this.handlePointerDown);
 		this.canvas.addEventListener("pointermove", this.handlePointerMove);
 		this.canvas.addEventListener("pointerup", this.handlePointerUp);
 		this.canvas.addEventListener("pointercancel", this.handlePointerUp);
+
+		// Allow touch events to pass through the canvas for scrolling
+		this.canvas.addEventListener("touchstart", this.handleTouchPassthrough, { passive: true });
+		this.canvas.addEventListener("touchmove", this.handleTouchPassthrough, { passive: true });
 	}
 
+	private handleTouchPassthrough = (_e: TouchEvent): void => {
+		// Do nothing — let touch events bubble to scroll container
+	};
+
 	private handlePointerDown = (e: PointerEvent): void => {
+		// Only handle pen (Apple Pencil) and mouse (desktop fallback)
 		if (e.pointerType === "touch") return;
 
 		e.preventDefault();
-		e.stopPropagation();
 
 		if (this.mode === "select") {
 			this.handleSelectTap(e);
