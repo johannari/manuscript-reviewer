@@ -408,15 +408,20 @@ export class ManuscriptPdfView extends ItemView {
 		// Separator
 		this.toolbar.createDiv({ cls: "toolbar-separator" });
 
-		// Width buttons
-		const widths = [1, 2, 4, 6];
+		// Width buttons — labeled as Thin/Med/Thick/Bold
+		const widths: { value: number; label: string }[] = [
+			{ value: 1, label: "S" },
+			{ value: 2, label: "M" },
+			{ value: 4, label: "L" },
+			{ value: 6, label: "XL" },
+		];
 		for (const w of widths) {
 			const widthBtn = this.toolbar.createEl("button", {
 				cls: "width-btn",
-				text: `${w}`,
-				title: `Width: ${w}`,
+				text: w.label,
+				title: `Pen width: ${w.value}`,
 			});
-			if (w === this.plugin.settings.penWidth) {
+			if (w.value === this.plugin.settings.penWidth) {
 				widthBtn.addClass("is-active");
 			}
 			widthBtn.addEventListener("click", () => {
@@ -424,7 +429,7 @@ export class ManuscriptPdfView extends ItemView {
 					(el) => el.removeClass("is-active")
 				);
 				widthBtn.addClass("is-active");
-				this.annotationManager.setPenWidth(w);
+				this.annotationManager.setPenWidth(w.value);
 			});
 		}
 	}
