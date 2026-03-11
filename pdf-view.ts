@@ -1,5 +1,7 @@
 import { ItemView, WorkspaceLeaf, TFile, normalizePath } from "obsidian";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+// @ts-ignore - raw text import for worker blob
+import pdfjsWorkerSrc from "pdfjs-dist/legacy/build/pdf.worker.min.mjs";
 import { AnnotationStore } from "./annotation-store";
 import { AnnotationManager } from "./annotation-manager";
 import { InteractionMode } from "./stroke-canvas";
@@ -7,7 +9,8 @@ import type ManuscriptReviewerPlugin from "./main";
 
 export const VIEW_TYPE = "manuscript-reviewer-pdf";
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = "";
+const workerBlob = new Blob([pdfjsWorkerSrc], { type: "application/javascript" });
+pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(workerBlob);
 
 const BUFFER_PAGES = 1;
 
@@ -111,29 +114,42 @@ export class ManuscriptPdfView extends ItemView {
 		if (!(pdfFile instanceof TFile)) {
 			this.scrollContainer!.createEl("p", {
 				text: `PDF not found: ${pdfPath}. Set the correct path in plugin settings.`,
+				attr: { style: "color: white; padding: 20px; font-size: 16px;" },
 			});
 			return;
 		}
 
-		const buf = await this.app.vault.readBinary(pdfFile);
-		this.pdf = await pdfjsLib.getDocument({
-			data: buf,
-			disableWorker: true,
-		}).promise;
-		this.totalPages = this.pdf.numPages;
+		try {
+			const buf = await this.app.vault.readBinary(pdfFile);
+			const data = new Uint8Array(buf);
+			this.pdf = await pdfjsLib.getDocument({
+				data,
+				useWorkerFetch: false,
+				isEvalSupported: false,
+				useSystemFonts: true,
+			}).promise;
+			this.totalPages = this.pdf.numPages;
 
-		// Get dimensions from first page
-		const firstPage = await this.pdf.getPage(1);
-		const viewport = firstPage.getViewport({ scale: this.scale });
-		this.pageWidth = viewport.width;
-		this.pageHeight = viewport.height;
+			// Get dimensions from first page
+			const firstPage = await this.pdf.getPage(1);
+			const viewport = firstPage.getViewport({ scale: this.scale });
+			this.pageWidth = viewport.width;
+			this.pageHeight = viewport.height;
 
-		this.setupPages();
+			this.setupPages();
 
-		// Restore scroll position
-		const savedPage = this.store.getCurrentPage();
-		if (savedPage > 0) {
-			this.scrollToPage(savedPage);
+			// Restore scroll position
+			const savedPage = this.store.getCurrentPage();
+			if (savedPage > 0) {
+				this.scrollToPage(savedPage);
+			}
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			this.scrollContainer!.createEl("p", {
+				text: `Failed to load PDF: ${msg}`,
+				attr: { style: "color: white; padding: 20px; font-size: 16px;" },
+			});
+			console.error("Manuscript Reviewer: PDF load error", e);
 		}
 	}
 
