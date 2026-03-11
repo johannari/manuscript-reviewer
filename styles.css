@@ -26,7 +26,7 @@
 	left: 0;
 	width: 100%;
 	height: 100%;
-	touch-action: pinch-zoom pan-x pan-y;
+	touch-action: auto;
 }
 
 .manuscript-reviewer-toolbar {
