@@ -1,0 +1,9 @@
+{
+	"id": "manuscript-reviewer",
+	"name": "Manuscript Reviewer",
+	"version": "1.0.0",
+	"minAppVersion": "1.5.0",
+	"description": "Annotate PDFs with Apple Pencil handwriting and export structured notes",
+	"author": "johannari",
+	"isDesktopOnly": false
+}

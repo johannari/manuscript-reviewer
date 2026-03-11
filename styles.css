@@ -1,0 +1,126 @@
+.manuscript-reviewer-container {
+	width: 100%;
+	height: 100%;
+	overflow-y: auto;
+	-webkit-overflow-scrolling: touch;
+	position: relative;
+	background: #525659;
+}
+
+.manuscript-reviewer-page-wrapper {
+	position: relative;
+	margin: 8px auto;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+	background: white;
+}
+
+.manuscript-reviewer-page-canvas {
+	display: block;
+	width: 100%;
+	height: 100%;
+}
+
+.manuscript-reviewer-annotation-canvas {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 100%;
+	touch-action: none;
+}
+
+.manuscript-reviewer-toolbar {
+	position: sticky;
+	top: 0;
+	z-index: 100;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 4px 8px;
+	background: var(--background-secondary);
+	border-bottom: 1px solid var(--background-modifier-border);
+	flex-wrap: wrap;
+}
+
+.manuscript-reviewer-toolbar button {
+	min-width: 44px;
+	min-height: 44px;
+	padding: 8px;
+	border: none;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--text-normal);
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 14px;
+}
+
+.manuscript-reviewer-toolbar button:hover {
+	background: var(--background-modifier-hover);
+}
+
+.manuscript-reviewer-toolbar button.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent);
+}
+
+.manuscript-reviewer-toolbar button:disabled {
+	opacity: 0.3;
+	cursor: not-allowed;
+}
+
+.manuscript-reviewer-toolbar .toolbar-separator {
+	width: 1px;
+	height: 28px;
+	background: var(--background-modifier-border);
+	margin: 0 4px;
+}
+
+.manuscript-reviewer-toolbar .color-swatch {
+	width: 24px;
+	height: 24px;
+	border-radius: 50%;
+	border: 2px solid var(--background-modifier-border);
+	cursor: pointer;
+	padding: 0;
+	min-width: 44px;
+	min-height: 44px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.manuscript-reviewer-toolbar .color-swatch .swatch-inner {
+	width: 24px;
+	height: 24px;
+	border-radius: 50%;
+}
+
+.manuscript-reviewer-toolbar .color-swatch.is-active {
+	border-color: var(--interactive-accent);
+}
+
+.manuscript-reviewer-toolbar .width-btn {
+	font-weight: bold;
+}
+
+.manuscript-reviewer-page-wrapper .annotation-highlight {
+	position: absolute;
+	border: 2px dashed rgba(100, 149, 237, 0.5);
+	pointer-events: none;
+	border-radius: 4px;
+}
+
+.manuscript-reviewer-page-wrapper .annotation-highlight.is-selected {
+	border-color: rgba(100, 149, 237, 0.9);
+	background: rgba(100, 149, 237, 0.1);
+}
+
+.manuscript-reviewer-page-number {
+	text-align: center;
+	color: var(--text-muted);
+	font-size: 12px;
+	padding: 2px 0;
+}

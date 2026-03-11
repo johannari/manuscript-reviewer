@@ -1,0 +1,22 @@
+{
+	"name": "manuscript-reviewer",
+	"version": "1.0.0",
+	"description": "Obsidian plugin for annotating PDFs with Apple Pencil",
+	"main": "main.js",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "node esbuild.config.mjs production"
+	},
+	"keywords": [],
+	"author": "johannari",
+	"license": "MIT",
+	"devDependencies": {
+		"@types/node": "^20.11.0",
+		"esbuild": "^0.20.0",
+		"obsidian": "^1.5.0",
+		"typescript": "^5.3.0"
+	},
+	"dependencies": {
+		"pdfjs-dist": "^4.0.0"
+	}
+}
