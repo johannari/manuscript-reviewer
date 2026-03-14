@@ -80,6 +80,16 @@ export class ManuscriptPdfView extends ItemView {
 			cls: "manuscript-reviewer-container",
 		});
 
+		// Listen for pen pointer events on the scroll container
+		// The annotation canvases have pointer-events: none so they don't
+		// interfere with finger scrolling. We capture pen events here and
+		// route them to the correct StrokeCanvas based on which page wrapper
+		// the pen is over.
+		this.scrollContainer.addEventListener("pointerdown", this.handlePenDown);
+		this.scrollContainer.addEventListener("pointermove", this.handlePenMove);
+		this.scrollContainer.addEventListener("pointerup", this.handlePenUp);
+		this.scrollContainer.addEventListener("pointercancel", this.handlePenUp);
+
 		this.annotationManager.setSelectionCallback((ann) => {
 			if (this.deleteBtn) {
 				this.deleteBtn.disabled = !ann;
@@ -319,6 +329,52 @@ export class ManuscriptPdfView extends ItemView {
 			this.scrollContainer.scrollTop = pw.wrapper.offsetTop;
 		}
 	}
+
+	private activeDrawingPage: number | null = null;
+
+	private findPageAtPoint(clientX: number, clientY: number): number | null {
+		for (const [page, pw] of this.pageWrappers) {
+			if (!pw.rendered) continue;
+			const rect = pw.wrapper.getBoundingClientRect();
+			if (
+				clientX >= rect.left &&
+				clientX <= rect.right &&
+				clientY >= rect.top &&
+				clientY <= rect.bottom
+			) {
+				return page;
+			}
+		}
+		return null;
+	}
+
+	private handlePenDown = (e: PointerEvent): void => {
+		if (e.pointerType === "touch") return;
+		const page = this.findPageAtPoint(e.clientX, e.clientY);
+		if (page === null) return;
+
+		e.preventDefault();
+		e.stopPropagation();
+		// Prevent scrolling for this pointer
+		this.scrollContainer!.setPointerCapture(e.pointerId);
+		this.activeDrawingPage = page;
+		this.annotationManager.routePenDown(page, e);
+	};
+
+	private handlePenMove = (e: PointerEvent): void => {
+		if (e.pointerType === "touch" || this.activeDrawingPage === null) return;
+		e.preventDefault();
+		this.annotationManager.routePenMove(this.activeDrawingPage, e);
+	};
+
+	private handlePenUp = (e: PointerEvent): void => {
+		if (e.pointerType === "touch" || this.activeDrawingPage === null) return;
+		if (this.scrollContainer!.hasPointerCapture(e.pointerId)) {
+			this.scrollContainer!.releasePointerCapture(e.pointerId);
+		}
+		this.annotationManager.routePenUp(this.activeDrawingPage, e);
+		this.activeDrawingPage = null;
+	};
 
 	private buildToolbar(container: HTMLElement): void {
 		this.toolbar = container.createDiv({

@@ -133,4 +133,19 @@ export class AnnotationManager {
 	getSelectedAnnotation(): Annotation | null {
 		return this.selectedAnnotation;
 	}
+
+	routePenDown(page: number, e: PointerEvent): void {
+		const sc = this.canvases.get(page);
+		if (sc) sc.onPenDown(e);
+	}
+
+	routePenMove(page: number, e: PointerEvent): void {
+		const sc = this.canvases.get(page);
+		if (sc) sc.onPenMove(e);
+	}
+
+	routePenUp(page: number, e: PointerEvent): void {
+		const sc = this.canvases.get(page);
+		if (sc) sc.onPenUp(e);
+	}
 }

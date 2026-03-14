@@ -67,8 +67,6 @@ export class StrokeCanvas {
 		this.penColor = settings.penColor;
 		this.penWidth = settings.penWidth;
 		this.groupingTimeout = settings.groupingTimeout;
-
-		this.setupEvents();
 	}
 
 	setMode(mode: InteractionMode): void {
@@ -77,8 +75,6 @@ export class StrokeCanvas {
 			this.selectedAnnotation = null;
 			this.callbacks.onSelectionChanged(null);
 		}
-		this.canvas.style.cursor =
-			mode === "draw" ? "crosshair" : "pointer";
 	}
 
 	setPenColor(color: string): void {
@@ -116,66 +112,16 @@ export class StrokeCanvas {
 		}
 	}
 
+	getCanvas(): HTMLCanvasElement {
+		return this.canvas;
+	}
+
 	destroy(): void {
 		if (this.groupingTimer) clearTimeout(this.groupingTimer);
-		this.canvas.removeEventListener(
-			"pointerdown",
-			this.handlePointerDown
-		);
-		this.canvas.removeEventListener(
-			"pointermove",
-			this.handlePointerMove
-		);
-		this.canvas.removeEventListener("pointerup", this.handlePointerUp);
-		this.canvas.removeEventListener(
-			"pointercancel",
-			this.handlePointerUp
-		);
 	}
 
-	private scrollContainer: HTMLElement | null = null;
-	private touchStartY: number = 0;
-	private touchStartX: number = 0;
-	private touchScrollTop: number = 0;
-
-	private setupEvents(): void {
-		// Find the scroll container for manual touch scrolling
-		this.scrollContainer = this.canvas.closest(".manuscript-reviewer-container");
-
-		// Pen events on canvas (touch-action: none blocks browser scroll)
-		this.canvas.addEventListener("pointerdown", this.handlePointerDown);
-		this.canvas.addEventListener("pointermove", this.handlePointerMove);
-		this.canvas.addEventListener("pointerup", this.handlePointerUp);
-		this.canvas.addEventListener("pointercancel", this.handlePointerUp);
-
-		// Manual touch scrolling since touch-action: none blocks it
-		this.canvas.addEventListener("touchstart", this.handleTouchStart, { passive: false });
-		this.canvas.addEventListener("touchmove", this.handleTouchMove, { passive: false });
-	}
-
-	private handleTouchStart = (e: TouchEvent): void => {
-		if (!this.scrollContainer || e.touches.length === 0) return;
-		this.touchStartY = e.touches[0].clientY;
-		this.touchStartX = e.touches[0].clientX;
-		this.touchScrollTop = this.scrollContainer.scrollTop;
-	};
-
-	private handleTouchMove = (e: TouchEvent): void => {
-		if (!this.scrollContainer || e.touches.length === 0) return;
-		e.preventDefault();
-		const dy = this.touchStartY - e.touches[0].clientY;
-		this.scrollContainer.scrollTop = this.touchScrollTop + dy;
-	};
-
-	private handlePointerDown = (e: PointerEvent): void => {
-		// Only handle pen (Apple Pencil) and mouse (desktop fallback)
-		// Finger touch is handled by touchstart/touchmove above for scrolling
-		if (e.pointerType === "touch") return;
-
-		e.preventDefault();
-		e.stopPropagation();
-		this.canvas.setPointerCapture(e.pointerId);
-
+	// Called by AnnotationManager when a pen pointerdown hits this page
+	onPenDown(e: PointerEvent): void {
 		if (this.mode === "select") {
 			this.handleSelectTap(e);
 			return;
@@ -201,13 +147,10 @@ export class StrokeCanvas {
 			point.x * this.canvas.width,
 			point.y * this.canvas.height
 		);
-	};
+	}
 
-	private handlePointerMove = (e: PointerEvent): void => {
-		if (!this.isDrawing || e.pointerType === "touch") return;
-
-		e.preventDefault();
-		e.stopPropagation();
+	onPenMove(e: PointerEvent): void {
+		if (!this.isDrawing) return;
 
 		const point = this.getNormalizedPoint(e);
 		this.currentPoints.push(point);
@@ -228,13 +171,9 @@ export class StrokeCanvas {
 			point.x * this.canvas.width,
 			point.y * this.canvas.height
 		);
-	};
+	}
 
-	private handlePointerUp = (e: PointerEvent): void => {
-		if (e.pointerType === "touch") return;
-		if (this.canvas.hasPointerCapture(e.pointerId)) {
-			this.canvas.releasePointerCapture(e.pointerId);
-		}
+	onPenUp(_e: PointerEvent): void {
 		if (!this.isDrawing) return;
 		this.isDrawing = false;
 
@@ -248,7 +187,7 @@ export class StrokeCanvas {
 
 		this.addStrokeToAnnotation(stroke);
 		this.currentPoints = [];
-	};
+	}
 
 	private addStrokeToAnnotation(stroke: Stroke): void {
 		if (this.groupingTimer) clearTimeout(this.groupingTimer);
