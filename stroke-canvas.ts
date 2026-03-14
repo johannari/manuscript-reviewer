@@ -2,7 +2,6 @@ import {
 	Annotation,
 	Stroke,
 	StrokePoint,
-	BoundingBox,
 	computeBoundingBox,
 	boxesOverlapOrNear,
 	generateId,
@@ -44,6 +43,12 @@ export class StrokeCanvas {
 
 	private undoStack: { annotationId: string; stroke: Stroke }[] = [];
 
+	// For manual finger scrolling
+	private scrollContainer: HTMLElement | null = null;
+	private fingerPointerId: number | null = null;
+	private fingerStartY: number = 0;
+	private fingerScrollStart: number = 0;
+
 	constructor(
 		canvas: HTMLCanvasElement,
 		page: number,
@@ -67,6 +72,11 @@ export class StrokeCanvas {
 		this.penColor = settings.penColor;
 		this.penWidth = settings.penWidth;
 		this.groupingTimeout = settings.groupingTimeout;
+
+		this.scrollContainer = this.canvas.closest(
+			".manuscript-reviewer-container"
+		);
+		this.setupEvents();
 	}
 
 	setMode(mode: InteractionMode): void {
@@ -118,10 +128,115 @@ export class StrokeCanvas {
 
 	destroy(): void {
 		if (this.groupingTimer) clearTimeout(this.groupingTimer);
+		// Remove touch listener
+		this.canvas.removeEventListener("touchstart", this.preventTouch);
+		this.canvas.removeEventListener("touchmove", this.preventTouch);
+		this.canvas.removeEventListener(
+			"pointerdown",
+			this.handlePointerDown
+		);
+		this.canvas.removeEventListener(
+			"pointermove",
+			this.handlePointerMove
+		);
+		this.canvas.removeEventListener("pointerup", this.handlePointerUp);
+		this.canvas.removeEventListener(
+			"pointercancel",
+			this.handlePointerUp
+		);
 	}
 
-	// Called by AnnotationManager when a pen pointerdown hits this page
+	// Also expose direct pen methods for routing from parent
 	onPenDown(e: PointerEvent): void {
+		this.doPenDown(e);
+	}
+
+	onPenMove(e: PointerEvent): void {
+		this.doPenMove(e);
+	}
+
+	onPenUp(e: PointerEvent): void {
+		this.doPenUp(e);
+	}
+
+	private setupEvents(): void {
+		// CRITICAL: Prevent ALL touch events from reaching the browser's
+		// scroll handler. This is the only reliable way to stop iOS WKWebView
+		// from scrolling when Apple Pencil touches the canvas.
+		this.canvas.addEventListener("touchstart", this.preventTouch, {
+			passive: false,
+		});
+		this.canvas.addEventListener("touchmove", this.preventTouch, {
+			passive: false,
+		});
+
+		// Use pointer events to distinguish pen from finger
+		this.canvas.addEventListener("pointerdown", this.handlePointerDown);
+		this.canvas.addEventListener("pointermove", this.handlePointerMove);
+		this.canvas.addEventListener("pointerup", this.handlePointerUp);
+		this.canvas.addEventListener("pointercancel", this.handlePointerUp);
+	}
+
+	private preventTouch = (e: TouchEvent): void => {
+		e.preventDefault();
+	};
+
+	private handlePointerDown = (e: PointerEvent): void => {
+		if (e.pointerType === "touch") {
+			// Finger: start manual scroll
+			this.fingerPointerId = e.pointerId;
+			this.fingerStartY = e.clientY;
+			this.fingerScrollStart = this.scrollContainer?.scrollTop ?? 0;
+			this.canvas.setPointerCapture(e.pointerId);
+			return;
+		}
+
+		// Pen or mouse: draw
+		e.preventDefault();
+		e.stopPropagation();
+		this.canvas.setPointerCapture(e.pointerId);
+		this.doPenDown(e);
+	};
+
+	private handlePointerMove = (e: PointerEvent): void => {
+		if (
+			e.pointerType === "touch" &&
+			e.pointerId === this.fingerPointerId
+		) {
+			// Finger: manual scroll
+			if (this.scrollContainer) {
+				const dy = this.fingerStartY - e.clientY;
+				this.scrollContainer.scrollTop = this.fingerScrollStart + dy;
+			}
+			return;
+		}
+
+		if (e.pointerType === "touch") return;
+		// Pen or mouse
+		e.preventDefault();
+		this.doPenMove(e);
+	};
+
+	private handlePointerUp = (e: PointerEvent): void => {
+		if (
+			e.pointerType === "touch" &&
+			e.pointerId === this.fingerPointerId
+		) {
+			this.fingerPointerId = null;
+			if (this.canvas.hasPointerCapture(e.pointerId)) {
+				this.canvas.releasePointerCapture(e.pointerId);
+			}
+			return;
+		}
+
+		if (e.pointerType === "touch") return;
+		if (this.canvas.hasPointerCapture(e.pointerId)) {
+			this.canvas.releasePointerCapture(e.pointerId);
+		}
+		this.doPenUp(e);
+	};
+
+	private doPenDown(e: PointerEvent): void {
 		if (this.mode === "select") {
 			this.handleSelectTap(e);
 			return;
@@ -149,7 +264,7 @@ export class StrokeCanvas {
 		);
 	}
 
-	onPenMove(e: PointerEvent): void {
+	private doPenMove(e: PointerEvent): void {
 		if (!this.isDrawing) return;
 
 		const point = this.getNormalizedPoint(e);
@@ -173,7 +288,7 @@ export class StrokeCanvas {
 		);
 	}
 
-	onPenUp(_e: PointerEvent): void {
+	private doPenUp(_e: PointerEvent): void {
 		if (!this.isDrawing) return;
 		this.isDrawing = false;
 
