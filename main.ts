@@ -1,4 +1,4 @@
-import { Notice, Plugin } from "obsidian";
+import { Notice, Plugin, TFile, FuzzySuggestModal, normalizePath } from "obsidian";
 import {
 	ManuscriptReviewerSettings,
 	DEFAULT_SETTINGS,
@@ -8,6 +8,30 @@ import { ManuscriptPdfView, VIEW_TYPE } from "./pdf-view";
 import { AnnotationStore } from "./annotation-store";
 import { ExportManager } from "./export";
 
+class PdfSuggestModal extends FuzzySuggestModal<TFile> {
+	private files: TFile[];
+	private onChoose: (file: TFile) => void;
+
+	constructor(app: any, files: TFile[], onChoose: (file: TFile) => void) {
+		super(app);
+		this.files = files;
+		this.onChoose = onChoose;
+		this.setPlaceholder("Choose a PDF to annotate...");
+	}
+
+	getItems(): TFile[] {
+		return this.files;
+	}
+
+	getItemText(item: TFile): string {
+		return item.path;
+	}
+
+	onChooseItem(item: TFile): void {
+		this.onChoose(item);
+	}
+}
+
 export default class ManuscriptReviewerPlugin extends Plugin {
 	settings: ManuscriptReviewerSettings = DEFAULT_SETTINGS;
 
@@ -16,26 +40,39 @@ export default class ManuscriptReviewerPlugin extends Plugin {
 
 		this.registerView(VIEW_TYPE, (leaf) => new ManuscriptPdfView(leaf, this));
 
-		this.addRibbonIcon("pen-tool", "Open Manuscript Reviewer", () => {
-			this.activateView();
+		this.addRibbonIcon("pen-tool", "Annotate a PDF", () => {
+			this.showPdfPicker();
 		});
 
 		this.addCommand({
-			id: "open-manuscript-reviewer",
-			name: "Open manuscript PDF",
-			callback: () => this.activateView(),
+			id: "annotate-pdf",
+			name: "Annotate a PDF",
+			callback: () => this.showPdfPicker(),
 		});
 
-		this.addCommand({
-			id: "export-chapter-notes",
-			name: "Export chapter notes",
-			callback: () => this.exportChapter(),
-		});
+		// File menu: right-click a PDF → "Annotate with Manuscript Reviewer"
+		this.registerEvent(
+			this.app.workspace.on("file-menu", (menu, file) => {
+				if (file instanceof TFile && file.extension === "pdf") {
+					menu.addItem((item) => {
+						item
+							.setTitle("Annotate with Manuscript Reviewer")
+							.setIcon("pen-tool")
+							.onClick(() => this.openPdf(file.path));
+					});
+				}
+			})
+		);
 
 		this.addCommand({
-			id: "export-all-chapters",
-			name: "Export all chapters",
-			callback: () => this.exportAllChapters(),
+			id: "export-annotations",
+			name: "Export annotations for current PDF",
+			checkCallback: (checking) => {
+				const view = this.getActivePdfView();
+				if (!view) return false;
+				if (!checking) this.exportAnnotations(view);
+				return true;
+			},
 		});
 
 		this.addSettingTab(new ManuscriptReviewerSettingTab(this.app, this));
@@ -57,92 +94,87 @@ export default class ManuscriptReviewerPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
-	private async activateView(): Promise<void> {
-		const existing =
-			this.app.workspace.getLeavesOfType(VIEW_TYPE);
-		if (existing.length > 0) {
-			this.app.workspace.revealLeaf(existing[0]);
+	private showPdfPicker(): void {
+		const pdfFiles = this.app.vault.getFiles().filter(
+			(f) => f.extension === "pdf"
+		);
+
+		if (pdfFiles.length === 0) {
+			new Notice("No PDF files found in your vault");
 			return;
+		}
+
+		if (pdfFiles.length === 1) {
+			this.openPdf(pdfFiles[0].path);
+			return;
+		}
+
+		new PdfSuggestModal(this.app, pdfFiles, (file) => {
+			this.openPdf(file.path);
+		}).open();
+	}
+
+	async openPdf(pdfPath: string): Promise<void> {
+		// Check if already open
+		const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE);
+		for (const leaf of existing) {
+			const view = leaf.view as unknown as ManuscriptPdfView;
+			if (view.getPdfPath() === pdfPath) {
+				this.app.workspace.revealLeaf(leaf);
+				return;
+			}
 		}
 
 		const leaf = this.app.workspace.getLeaf("tab");
 		await leaf.setViewState({
 			type: VIEW_TYPE,
 			active: true,
+			state: { file: pdfPath },
 		});
 		this.app.workspace.revealLeaf(leaf);
 	}
 
-	private async exportChapter(): Promise<void> {
-		const store = new AnnotationStore(
-			this.app,
-			this.settings.pdfPath
-		);
-		await store.load();
+	private getActivePdfView(): ManuscriptPdfView | null {
+		const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE);
+		if (leaves.length === 0) return null;
 
-		const exportMgr = new ExportManager(this.app, store);
-
-		try {
-			const config = await exportMgr.loadConfig(
-				this.settings.configPath
-			);
-			const chapters = config.chapters;
-
-			if (chapters.length === 0) {
-				new Notice("No chapters configured");
-				return;
-			}
-
-			// Find chapter based on current page from active view
-			let targetChapter = chapters[0];
-			const leaves =
-				this.app.workspace.getLeavesOfType(VIEW_TYPE);
-			if (leaves.length > 0) {
-				const view = leaves[0].view as ManuscriptPdfView;
-				const currentPage = view.store.getCurrentPage();
-				for (const ch of chapters) {
-					if (
-						currentPage >= ch.startPage &&
-						currentPage <= ch.endPage
-					) {
-						targetChapter = ch;
-						break;
-					}
-				}
-			}
-
-			const path = await exportMgr.exportChapter(
-				targetChapter.id,
-				this.settings.configPath,
-				this.settings.pdfPath,
-				this.settings.exportDir
-			);
-			new Notice(
-				`Exported ${targetChapter.label} to ${path}`
-			);
-		} catch (e) {
-			new Notice(`Export failed: ${(e as Error).message}`);
+		// Prefer the active leaf if it's one of ours
+		const activeLeaf = this.app.workspace.activeLeaf;
+		if (activeLeaf && leaves.includes(activeLeaf)) {
+			return activeLeaf.view as unknown as ManuscriptPdfView;
 		}
+		return leaves[0].view as unknown as ManuscriptPdfView;
 	}
 
-	private async exportAllChapters(): Promise<void> {
-		const store = new AnnotationStore(
-			this.app,
-			this.settings.pdfPath
-		);
+	private async exportAnnotations(view: ManuscriptPdfView): Promise<void> {
+		const pdfPath = view.getPdfPath();
+		if (!pdfPath) {
+			new Notice("No PDF is open");
+			return;
+		}
+
+		const store = new AnnotationStore(this.app, pdfPath);
 		await store.load();
 
-		const exportMgr = new ExportManager(this.app, store);
+		const annotations = store.getAnnotations();
+		if (annotations.length === 0) {
+			new Notice("No annotations to export");
+			return;
+		}
 
+		const exportMgr = new ExportManager(this.app, store);
 		try {
-			const paths = await exportMgr.exportAllChapters(
-				this.settings.configPath,
-				this.settings.pdfPath,
-				this.settings.exportDir
+			const exportDir = normalizePath(this.settings.exportDir);
+			const pdfName = pdfPath.replace(/\.pdf$/i, "").split("/").pop() || "annotations";
+			const notesPath = normalizePath(`${exportDir}/${pdfName}.md`);
+
+			// Generate simple export without chapter config
+			const path = await exportMgr.exportSimple(
+				pdfPath,
+				notesPath,
+				exportDir
 			);
-			new Notice(
-				`Exported ${paths.length} chapter(s)`
-			);
+			new Notice(`Exported annotations to ${path}`);
 		} catch (e) {
 			new Notice(`Export failed: ${(e as Error).message}`);
 		}
