@@ -76,16 +76,6 @@ export class ManuscriptPdfView extends ItemView {
 		container.addClass("manuscript-reviewer-view");
 
 		this.buildToolbar(container);
-
-		// Debug: show pointer type and version
-		const debugEl = container.createDiv({
-			attr: { style: "padding: 4px 8px; font-size: 12px; background: #333; color: #0f0; font-family: monospace;" },
-		});
-		debugEl.textContent = "v1.0.7 — touch screen to see pointer type";
-		container.addEventListener("pointerdown", (e: PointerEvent) => {
-			debugEl.textContent = `v1.0.7 — type: ${e.pointerType}, pressure: ${e.pressure.toFixed(2)}, id: ${e.pointerId}`;
-		});
-
 		this.scrollContainer = container.createDiv({
 			cls: "manuscript-reviewer-container",
 		});
