@@ -121,6 +121,89 @@ export class ExportManager {
 		return notesPath;
 	}
 
+	async exportSimple(
+		pdfPath: string,
+		notesPath: string,
+		exportDir: string
+	): Promise<string> {
+		const annotations = this.store
+			.getAnnotations()
+			.sort((a, b) => a.page - b.page || a.boundingBox.y - b.boundingBox.y);
+
+		if (annotations.length === 0) {
+			throw new Error("No annotations to export");
+		}
+
+		const pdfName = pdfPath.replace(/\.pdf$/i, "").split("/").pop() || "pdf";
+		const photoDir = normalizePath(`${exportDir}/photos/${pdfName}`);
+		await this.ensureFolder(photoDir);
+
+		// Load PDF for text extraction
+		const pdfFile = this.app.vault.getAbstractFileByPath(
+			normalizePath(pdfPath)
+		);
+		if (!(pdfFile instanceof TFile))
+			throw new Error(`PDF not found: ${pdfPath}`);
+		const pdfBuf = await this.app.vault.readBinary(pdfFile);
+		const pdf = await pdfjsLib.getDocument({ data: pdfBuf }).promise;
+
+		const entries: {
+			annotation: Annotation;
+			pngPath: string;
+			context: string;
+		}[] = [];
+
+		for (const ann of annotations) {
+			const pngFilename = `annotation-${ann.id}.png`;
+			const pngPath = normalizePath(`${photoDir}/${pngFilename}`);
+			await this.renderAnnotationPng(ann, pngPath);
+
+			const page = await pdf.getPage(ann.page);
+			const context = await this.extractNearestText(
+				page,
+				ann.boundingBox.y + ann.boundingBox.height / 2
+			);
+
+			entries.push({
+				annotation: ann,
+				pngPath: `photos/${pdfName}/${pngFilename}`,
+				context,
+			});
+		}
+
+		// Generate markdown
+		let md = `# Annotations: ${pdfName}\n\n`;
+		let currentPage = -1;
+		for (const entry of entries) {
+			if (entry.annotation.page !== currentPage) {
+				currentPage = entry.annotation.page;
+				md += `## Page ${currentPage}\n\n`;
+			}
+			const context = entry.context
+				? `> "${entry.context}" (p. ${entry.annotation.page})\n`
+				: `> (p. ${entry.annotation.page})\n`;
+			md += context;
+			md += `→ ![[${entry.pngPath}]]\n\n`;
+		}
+
+		await this.ensureFolder(
+			notesPath.substring(0, notesPath.lastIndexOf("/"))
+		);
+
+		const existingFile =
+			this.app.vault.getAbstractFileByPath(notesPath);
+		if (existingFile instanceof TFile) {
+			await this.app.vault.modify(existingFile, md);
+		} else {
+			await this.app.vault.create(notesPath, md);
+		}
+
+		// Clean up orphaned PNGs
+		await this.cleanOrphanedPngs(photoDir, annotations);
+
+		return notesPath;
+	}
+
 	async exportAllChapters(
 		configPath: string,
 		pdfPath: string,

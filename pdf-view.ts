@@ -16,8 +16,10 @@ const BUFFER_PAGES = 1;
 
 export class ManuscriptPdfView extends ItemView {
 	plugin: ManuscriptReviewerPlugin;
-	store: AnnotationStore;
-	annotationManager: AnnotationManager;
+	store!: AnnotationStore;
+	annotationManager!: AnnotationManager;
+
+	private pdfPath: string = "";
 
 	private pdf: pdfjsLib.PDFDocumentProxy | null = null;
 	private totalPages: number = 0;
@@ -45,15 +47,6 @@ export class ManuscriptPdfView extends ItemView {
 	constructor(leaf: WorkspaceLeaf, plugin: ManuscriptReviewerPlugin) {
 		super(leaf);
 		this.plugin = plugin;
-		this.store = new AnnotationStore(
-			this.app,
-			plugin.settings.pdfPath
-		);
-		this.annotationManager = new AnnotationManager(this.store, {
-			penColor: plugin.settings.penColor,
-			penWidth: plugin.settings.penWidth,
-			groupingTimeout: plugin.settings.strokeGroupingTimeout,
-		});
 	}
 
 	getViewType(): string {
@@ -61,6 +54,10 @@ export class ManuscriptPdfView extends ItemView {
 	}
 
 	getDisplayText(): string {
+		if (this.pdfPath) {
+			const name = this.pdfPath.split("/").pop() || this.pdfPath;
+			return `Annotate: ${name}`;
+		}
 		return "Manuscript Reviewer";
 	}
 
@@ -68,7 +65,64 @@ export class ManuscriptPdfView extends ItemView {
 		return "pen-tool";
 	}
 
+	getState(): Record<string, unknown> {
+		return { file: this.pdfPath };
+	}
+
+	async setState(state: any, result: any): Promise<void> {
+		if (typeof state?.file === "string" && state.file) {
+			this.pdfPath = state.file;
+			await this.initForFile();
+		}
+		await super.setState(state, result);
+	}
+
+	getPdfPath(): string {
+		return this.pdfPath;
+	}
+
 	async onOpen(): Promise<void> {
+		// View will be initialized when setState is called with a file path
+	}
+
+	async onClose(): Promise<void> {
+		if (this.store) {
+			await this.store.save();
+		}
+		this.pageWrappers.forEach((pw, page) => {
+			if (pw.rendered) {
+				this.annotationManager?.unregisterCanvas(page);
+			}
+		});
+		this.pageWrappers.clear();
+		if (this.pdf) {
+			this.pdf.destroy();
+			this.pdf = null;
+		}
+	}
+
+	private async initForFile(): Promise<void> {
+		if (!this.pdfPath) return;
+
+		// Clean up previous state
+		this.pageWrappers.forEach((pw, page) => {
+			if (pw.rendered) {
+				this.annotationManager?.unregisterCanvas(page);
+			}
+		});
+		this.pageWrappers.clear();
+		if (this.pdf) {
+			this.pdf.destroy();
+			this.pdf = null;
+		}
+
+		this.store = new AnnotationStore(this.app, this.pdfPath);
+		this.annotationManager = new AnnotationManager(this.store, {
+			penColor: this.plugin.settings.penColor,
+			penWidth: this.plugin.settings.penWidth,
+			groupingTimeout: this.plugin.settings.strokeGroupingTimeout,
+		});
+
 		await this.store.load();
 
 		const container = this.contentEl;
@@ -90,31 +144,20 @@ export class ManuscriptPdfView extends ItemView {
 			// annotations auto-save via store
 		});
 
+		// Update the tab title
+		(this.leaf as any).updateHeader?.();
+
 		await this.loadPdf();
 	}
 
-	async onClose(): Promise<void> {
-		await this.store.save();
-		this.pageWrappers.forEach((pw, page) => {
-			if (pw.rendered) {
-				this.annotationManager.unregisterCanvas(page);
-			}
-		});
-		this.pageWrappers.clear();
-		if (this.pdf) {
-			this.pdf.destroy();
-			this.pdf = null;
-		}
-	}
-
 	private async loadPdf(): Promise<void> {
-		const pdfPath = normalizePath(this.plugin.settings.pdfPath);
+		const pdfPath = normalizePath(this.pdfPath);
 		const pdfFile = this.app.vault.getAbstractFileByPath(pdfPath);
 
 		if (!(pdfFile instanceof TFile)) {
 			this.scrollContainer!.createEl("p", {
-				text: `PDF not found: ${pdfPath}. Set the correct path in plugin settings.`,
-				attr: { style: "color: white; padding: 20px; font-size: 16px;" },
+				text: `PDF not found: ${pdfPath}`,
+				attr: { style: "color: var(--text-muted); padding: 20px; font-size: 16px;" },
 			});
 			return;
 		}
@@ -147,7 +190,7 @@ export class ManuscriptPdfView extends ItemView {
 			const msg = e instanceof Error ? e.message : String(e);
 			this.scrollContainer!.createEl("p", {
 				text: `Failed to load PDF: ${msg}`,
-				attr: { style: "color: white; padding: 20px; font-size: 16px;" },
+				attr: { style: "color: var(--text-muted); padding: 20px; font-size: 16px;" },
 			});
 			console.error("Manuscript Reviewer: PDF load error", e);
 		}
@@ -408,7 +451,7 @@ export class ManuscriptPdfView extends ItemView {
 		// Separator
 		this.toolbar.createDiv({ cls: "toolbar-separator" });
 
-		// Width buttons — labeled as Thin/Med/Thick/Bold
+		// Width buttons
 		const widths: { value: number; label: string }[] = [
 			{ value: 1, label: "S" },
 			{ value: 2, label: "M" },

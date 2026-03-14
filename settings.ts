@@ -2,8 +2,6 @@ import { App, PluginSettingTab, Setting } from "obsidian";
 import type ManuscriptReviewerPlugin from "./main";
 
 export interface ManuscriptReviewerSettings {
-	pdfPath: string;
-	configPath: string;
 	exportDir: string;
 	penColor: string;
 	penWidth: number;
@@ -11,9 +9,7 @@ export interface ManuscriptReviewerSettings {
 }
 
 export const DEFAULT_SETTINGS: ManuscriptReviewerSettings = {
-	pdfPath: "manuscript.pdf",
-	configPath: "manuscript-reviewer-config.json",
-	exportDir: "notes/",
+	exportDir: "manuscript-reviewer-notes/",
 	penColor: "#ff0000",
 	penWidth: 2,
 	strokeGroupingTimeout: 1500,
@@ -31,38 +27,17 @@ export class ManuscriptReviewerSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		new Setting(containerEl)
-			.setName("Manuscript PDF path")
-			.setDesc("Path to the PDF file in your vault")
-			.addText((text) =>
-				text
-					.setPlaceholder("manuscript.pdf")
-					.setValue(this.plugin.settings.pdfPath)
-					.onChange(async (value) => {
-						this.plugin.settings.pdfPath = value;
-						await this.plugin.saveSettings();
-					})
-			);
-
-		new Setting(containerEl)
-			.setName("Chapter config path")
-			.setDesc("Path to the chapter configuration JSON file")
-			.addText((text) =>
-				text
-					.setPlaceholder("manuscript-reviewer-config.json")
-					.setValue(this.plugin.settings.configPath)
-					.onChange(async (value) => {
-						this.plugin.settings.configPath = value;
-						await this.plugin.saveSettings();
-					})
-			);
+		containerEl.createEl("p", {
+			text: "To annotate a PDF, right-click it in the file explorer and choose \"Annotate with Manuscript Reviewer\", or use the command palette.",
+			cls: "setting-item-description",
+		});
 
 		new Setting(containerEl)
 			.setName("Export directory")
 			.setDesc("Directory for exported notes and images")
 			.addText((text) =>
 				text
-					.setPlaceholder("notes/")
+					.setPlaceholder("manuscript-reviewer-notes/")
 					.setValue(this.plugin.settings.exportDir)
 					.onChange(async (value) => {
 						this.plugin.settings.exportDir = value;
