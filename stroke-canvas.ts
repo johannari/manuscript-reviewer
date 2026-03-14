@@ -133,22 +133,47 @@ export class StrokeCanvas {
 		);
 	}
 
+	private scrollContainer: HTMLElement | null = null;
+	private touchStartY: number = 0;
+	private touchStartX: number = 0;
+	private touchScrollTop: number = 0;
+
 	private setupEvents(): void {
+		// Find the scroll container for manual touch scrolling
+		this.scrollContainer = this.canvas.closest(".manuscript-reviewer-container");
+
+		// Pen events on canvas (touch-action: none blocks browser scroll)
 		this.canvas.addEventListener("pointerdown", this.handlePointerDown);
 		this.canvas.addEventListener("pointermove", this.handlePointerMove);
 		this.canvas.addEventListener("pointerup", this.handlePointerUp);
 		this.canvas.addEventListener("pointercancel", this.handlePointerUp);
+
+		// Manual touch scrolling since touch-action: none blocks it
+		this.canvas.addEventListener("touchstart", this.handleTouchStart, { passive: false });
+		this.canvas.addEventListener("touchmove", this.handleTouchMove, { passive: false });
 	}
+
+	private handleTouchStart = (e: TouchEvent): void => {
+		if (!this.scrollContainer || e.touches.length === 0) return;
+		this.touchStartY = e.touches[0].clientY;
+		this.touchStartX = e.touches[0].clientX;
+		this.touchScrollTop = this.scrollContainer.scrollTop;
+	};
+
+	private handleTouchMove = (e: TouchEvent): void => {
+		if (!this.scrollContainer || e.touches.length === 0) return;
+		e.preventDefault();
+		const dy = this.touchStartY - e.touches[0].clientY;
+		this.scrollContainer.scrollTop = this.touchScrollTop + dy;
+	};
 
 	private handlePointerDown = (e: PointerEvent): void => {
 		// Only handle pen (Apple Pencil) and mouse (desktop fallback)
-		// Touch (finger) passes through for scrolling
+		// Finger touch is handled by touchstart/touchmove above for scrolling
 		if (e.pointerType === "touch") return;
 
 		e.preventDefault();
 		e.stopPropagation();
-		// Capture this pointer so subsequent move/up events come to this canvas
-		// and the browser doesn't scroll for this pointer
 		this.canvas.setPointerCapture(e.pointerId);
 
 		if (this.mode === "select") {
