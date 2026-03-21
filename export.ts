@@ -1,6 +1,6 @@
 import { App, TFile, normalizePath } from "obsidian";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
-import { Annotation, AnnotationStore, Stroke } from "./annotation-store";
+import { Annotation, AnnotationStore, Stroke, StrokePoint } from "./annotation-store";
 
 interface ChapterConfig {
 	id: string;
@@ -14,6 +14,19 @@ interface ChapterConfig {
 interface FullConfig {
 	chapters: ChapterConfig[];
 }
+
+export type AnnotationType = "text" | "arrow" | "circle" | "underline" | "strikethrough" | "mark";
+
+interface ExportState {
+	lastExportDate: string;
+	pdfPath: string;
+	exportedAnnotations: Record<string, { exportDate: string; page: number }>;
+}
+
+// Minimum annotation diagonal as fraction of page (filters accidental touches)
+const MIN_ANNOTATION_DIAGONAL = 0.008;
+// Minimum total stroke path length as fraction of page diagonal
+const MIN_STROKE_PATH_LENGTH = 0.005;
 
 export class ExportManager {
 	private app: App;
@@ -34,6 +47,102 @@ export class ExportManager {
 		return JSON.parse(content);
 	}
 
+	/**
+	 * Filter out tiny accidental touches and marks below minimum size threshold.
+	 */
+	private filterNoise(annotations: Annotation[]): Annotation[] {
+		return annotations.filter((ann) => {
+			const b = ann.boundingBox;
+			const diagonal = Math.sqrt(b.width ** 2 + b.height ** 2);
+			if (diagonal < MIN_ANNOTATION_DIAGONAL) return false;
+
+			// Also check total stroke path length
+			let totalPathLength = 0;
+			for (const stroke of ann.strokes) {
+				for (let i = 1; i < stroke.points.length; i++) {
+					const dx = stroke.points[i].x - stroke.points[i - 1].x;
+					const dy = stroke.points[i].y - stroke.points[i - 1].y;
+					totalPathLength += Math.sqrt(dx * dx + dy * dy);
+				}
+			}
+			if (totalPathLength < MIN_STROKE_PATH_LENGTH) return false;
+
+			return true;
+		});
+	}
+
+	/**
+	 * Classify annotation based on stroke geometry.
+	 */
+	classifyAnnotation(ann: Annotation): AnnotationType {
+		const b = ann.boundingBox;
+		const diagonal = Math.sqrt(b.width ** 2 + b.height ** 2);
+
+		// Very small = mark (dot, tap)
+		if (diagonal < 0.02) return "mark";
+
+		const aspectRatio = b.height / Math.max(b.width, 0.001);
+		const totalStrokes = ann.strokes.length;
+		const totalPoints = ann.strokes.reduce((sum, s) => sum + s.points.length, 0);
+
+		// Single stroke analysis
+		if (totalStrokes === 1) {
+			const stroke = ann.strokes[0];
+			const pts = stroke.points;
+
+			// Check if roughly horizontal (underline or strikethrough)
+			if (aspectRatio < 0.2 && b.width > 0.03) {
+				return "underline"; // caller can check Y overlap with text for strikethrough
+			}
+
+			// Check if roughly closed curve (circle)
+			if (pts.length > 8) {
+				const startEnd = Math.sqrt(
+					(pts[0].x - pts[pts.length - 1].x) ** 2 +
+					(pts[0].y - pts[pts.length - 1].y) ** 2
+				);
+				if (startEnd < diagonal * 0.4) {
+					return "circle";
+				}
+			}
+
+			// Check if arrow-like (large directional spread, start far from end)
+			if (pts.length >= 3 && pts.length < 30) {
+				const startEnd = Math.sqrt(
+					(pts[0].x - pts[pts.length - 1].x) ** 2 +
+					(pts[0].y - pts[pts.length - 1].y) ** 2
+				);
+				if (startEnd > diagonal * 0.4) {
+					return "arrow";
+				}
+			}
+		}
+
+		// Multiple strokes or complex single stroke = likely text
+		if (totalStrokes > 1 || totalPoints > 15) {
+			// Check for strikethrough: multiple short horizontal strokes
+			const allHorizontal = ann.strokes.every((s) => {
+				if (s.points.length < 2) return false;
+				const sHeight = Math.abs(
+					Math.max(...s.points.map((p) => p.y)) -
+					Math.min(...s.points.map((p) => p.y))
+				);
+				const sWidth = Math.abs(
+					Math.max(...s.points.map((p) => p.x)) -
+					Math.min(...s.points.map((p) => p.x))
+				);
+				return sWidth > 0.02 && sHeight / sWidth < 0.3;
+			});
+			if (allHorizontal && aspectRatio < 0.25) {
+				return "strikethrough";
+			}
+
+			return "text";
+		}
+
+		return "mark";
+	}
+
 	async exportChapter(
 		chapterId: string,
 		configPath: string,
@@ -44,13 +153,16 @@ export class ExportManager {
 		const chapter = config.chapters.find((c) => c.id === chapterId);
 		if (!chapter) throw new Error(`Chapter not found: ${chapterId}`);
 
-		const annotations = this.store
+		let annotations = this.store
 			.getAnnotations()
 			.filter(
 				(a) =>
 					a.page >= chapter.startPage && a.page <= chapter.endPage
 			)
 			.sort((a, b) => a.page - b.page || a.boundingBox.y - b.boundingBox.y);
+
+		// Filter noise
+		annotations = this.filterNoise(annotations);
 
 		const photoDir = normalizePath(
 			`${exportDir}photos/${chapter.id}`
@@ -72,6 +184,7 @@ export class ExportManager {
 			pngPath: string;
 			context: string;
 			section: string;
+			type: AnnotationType;
 		}[] = [];
 
 		for (const ann of annotations) {
@@ -90,12 +203,14 @@ export class ExportManager {
 				ann.boundingBox.y,
 				chapter
 			);
+			const type = this.classifyAnnotation(ann);
 
 			entries.push({
 				annotation: ann,
 				pngPath: `photos/${chapter.id}/${pngFilename}`,
 				context,
 				section,
+				type,
 			});
 		}
 
@@ -119,6 +234,9 @@ export class ExportManager {
 		// Clean up orphaned PNGs
 		await this.cleanOrphanedPngs(photoDir, annotations);
 
+		// Write export state
+		await this.writeExportState(exportDir, pdfPath, annotations);
+
 		return notesPath;
 	}
 
@@ -127,12 +245,15 @@ export class ExportManager {
 		notesPath: string,
 		exportDir: string
 	): Promise<string> {
-		const annotations = this.store
+		let annotations = this.store
 			.getAnnotations()
 			.sort((a, b) => a.page - b.page || a.boundingBox.y - b.boundingBox.y);
 
+		// Filter noise
+		annotations = this.filterNoise(annotations);
+
 		if (annotations.length === 0) {
-			throw new Error("No annotations to export");
+			throw new Error("No annotations to export (all filtered as noise)");
 		}
 
 		const pdfName = pdfPath.replace(/\.pdf$/i, "").split("/").pop() || "pdf";
@@ -152,6 +273,7 @@ export class ExportManager {
 			annotation: Annotation;
 			pngPath: string;
 			context: string;
+			type: AnnotationType;
 		}[] = [];
 
 		for (const ann of annotations) {
@@ -165,15 +287,17 @@ export class ExportManager {
 				page,
 				ann.boundingBox
 			);
+			const type = this.classifyAnnotation(ann);
 
 			entries.push({
 				annotation: ann,
 				pngPath: `photos/${pdfName}/${pngFilename}`,
 				context,
+				type,
 			});
 		}
 
-		// Generate markdown
+		// Generate markdown with type tags
 		let md = `# Annotations: ${pdfName}\n\n`;
 		let currentPage = -1;
 		for (const entry of entries) {
@@ -181,11 +305,12 @@ export class ExportManager {
 				currentPage = entry.annotation.page;
 				md += `## Page ${currentPage}\n\n`;
 			}
+			const typeTag = `[${entry.type}]`;
 			const context = entry.context
-				? `> "${entry.context}" (p. ${entry.annotation.page})\n`
-				: `> (p. ${entry.annotation.page})\n`;
+				? `> "${entry.context}" (p. ${entry.annotation.page}) ${typeTag}\n`
+				: `> (p. ${entry.annotation.page}) ${typeTag}\n`;
 			md += context;
-			md += `→ ![[${entry.pngPath}]]\n\n`;
+			md += `> ![[${entry.pngPath}]]\n\n`;
 		}
 
 		await this.ensureFolder(
@@ -202,6 +327,9 @@ export class ExportManager {
 
 		// Clean up orphaned PNGs
 		await this.cleanOrphanedPngs(photoDir, annotations);
+
+		// Write export state
+		await this.writeExportState(exportDir, pdfPath, annotations);
 
 		return notesPath;
 	}
@@ -230,20 +358,38 @@ export class ExportManager {
 		outputPath: string,
 		pdfPage?: pdfjsLib.PDFPageProxy
 	): Promise<void> {
-		const padding = 0.15; // 15% padding for surrounding text context
 		const b = ann.boundingBox;
+		const diagonal = Math.sqrt(b.width ** 2 + b.height ** 2);
+
+		// Scale padding inversely with annotation size
+		// Small annotations get more padding (up to 30%), large stay at 15%
+		const basePadding = 0.15;
+		const padding = diagonal < 0.05
+			? Math.min(0.30, basePadding + (0.05 - diagonal) * 3)
+			: basePadding;
+
+		// For margin annotations (left or right edge), use full page width
+		const isMarginAnnotation = b.x < 0.15 || (b.x + b.width) > 0.85;
 
 		// Clamp the crop region to page bounds (0-1 normalized)
-		const cropX = Math.max(0, b.x - padding);
+		let cropX: number, cropRight: number;
+		if (isMarginAnnotation) {
+			// Full width so the text being referenced is visible
+			cropX = 0;
+			cropRight = 1;
+		} else {
+			cropX = Math.max(0, b.x - padding);
+			cropRight = Math.min(1, b.x + b.width + padding);
+		}
 		const cropY = Math.max(0, b.y - padding);
-		const cropRight = Math.min(1, b.x + b.width + padding);
 		const cropBottom = Math.min(1, b.y + b.height + padding);
 		const cropW = cropRight - cropX;
 		const cropH = cropBottom - cropY;
 
 		const renderWidth = 800;
 		const aspectRatio = cropH / cropW;
-		const renderHeight = Math.max(50, Math.round(renderWidth * aspectRatio));
+		// Minimum height of 100px so tiny marks aren't microscopic
+		const renderHeight = Math.max(100, Math.round(renderWidth * aspectRatio));
 
 		const canvas = document.createElement("canvas");
 		canvas.width = renderWidth;
@@ -326,7 +472,7 @@ export class ExportManager {
 
 		const items = textContent.items.filter(
 			(item) => "str" in item && (item as any).str.trim().length > 0
-		) as Array<{ str: string; transform: number[]; width: number }>;
+		) as Array<{ str: string; transform: number[]; width: number; height: number }>;
 
 		if (items.length === 0) return "";
 
@@ -334,50 +480,65 @@ export class ExportManager {
 		const annTop = bbox.y * pageHeight;
 		const annBottom = (bbox.y + bbox.height) * pageHeight;
 		const annCenterY = (annTop + annBottom) / 2;
-		const annLeft = bbox.x * pageWidth;
-		const annRight = (bbox.x + bbox.width) * pageWidth;
 
-		// Score each text item by proximity to annotation bbox
-		const scored = items.map((item) => {
-			const itemY = pageHeight - item.transform[5]; // convert from-bottom to from-top
-			const itemX = item.transform[4];
+		// Group text items into logical lines first
+		const itemsWithY = items.map((item) => ({
+			item,
+			y: pageHeight - item.transform[5], // convert from-bottom to from-top
+			x: item.transform[4],
+		}));
+		itemsWithY.sort((a, b) => a.y - b.y);
 
-			// Y distance: 0 if overlapping, otherwise distance to nearest edge
-			let yDist = 0;
-			if (itemY < annTop) yDist = annTop - itemY;
-			else if (itemY > annBottom) yDist = itemY - annBottom;
-
-			// X distance: prefer text on the same horizontal region
-			let xDist = 0;
-			if (itemX > annRight) xDist = (itemX - annRight) * 0.5; // less weight on X
-			else if (itemX + (item.width || 0) < annLeft) xDist = (annLeft - itemX) * 0.5;
-
-			return { item, dist: yDist + xDist, y: itemY };
-		});
-
-		scored.sort((a, b) => a.dist - b.dist);
-
-		// Take nearest items, then group by line (similar Y position)
-		const nearest = scored.slice(0, 15);
-		nearest.sort((a, b) => a.y - b.y);
-
-		// Group into lines (items within 3px Y are same line)
-		const lines: string[] = [];
-		let currentLine: string[] = [];
+		// Group into lines (items within 4px Y are same line)
+		const lines: { y: number; text: string; items: typeof itemsWithY }[] = [];
+		let currentLineItems: typeof itemsWithY = [];
 		let currentLineY = -999;
-		for (const s of nearest) {
-			if (Math.abs(s.y - currentLineY) > 3) {
-				if (currentLine.length > 0) lines.push(currentLine.join(" "));
-				currentLine = [];
-				currentLineY = s.y;
+		for (const item of itemsWithY) {
+			if (Math.abs(item.y - currentLineY) > 4) {
+				if (currentLineItems.length > 0) {
+					// Sort items in line by X position
+					currentLineItems.sort((a, b) => a.x - b.x);
+					lines.push({
+						y: currentLineY,
+						text: currentLineItems.map((i) => i.item.str).join(" "),
+						items: currentLineItems,
+					});
+				}
+				currentLineItems = [];
+				currentLineY = item.y;
 			}
-			currentLine.push(s.item.str);
+			currentLineItems.push(item);
 		}
-		if (currentLine.length > 0) lines.push(currentLine.join(" "));
+		if (currentLineItems.length > 0) {
+			currentLineItems.sort((a, b) => a.x - b.x);
+			lines.push({
+				y: currentLineY,
+				text: currentLineItems.map((i) => i.item.str).join(" "),
+				items: currentLineItems,
+			});
+		}
 
-		const text = lines.join(" ");
+		// Score each line by Y-distance to annotation
+		const annHeight = annBottom - annTop;
+		const searchRadius = Math.max(annHeight * 2, pageHeight * 0.15);
+
+		const scoredLines = lines
+			.map((line) => {
+				let yDist = 0;
+				if (line.y < annTop) yDist = annTop - line.y;
+				else if (line.y > annBottom) yDist = line.y - annBottom;
+				return { ...line, dist: yDist };
+			})
+			.filter((line) => line.dist <= searchRadius)
+			.sort((a, b) => a.dist - b.dist);
+
+		// Take the 3 nearest lines
+		const selectedLines = scoredLines.slice(0, 3);
+		selectedLines.sort((a, b) => a.y - b.y); // restore reading order
+
+		const text = selectedLines.map((l) => l.text).join(" ");
 		const trimmed =
-			text.length > 200 ? text.substring(0, 200) + "..." : text;
+			text.length > 150 ? text.substring(0, 150) + "..." : text;
 		return trimmed;
 	}
 
@@ -408,6 +569,7 @@ export class ExportManager {
 			pngPath: string;
 			context: string;
 			section: string;
+			type: AnnotationType;
 		}[]
 	): string {
 		let md = `# ${chapter.label}\n\n`;
@@ -436,15 +598,59 @@ export class ExportManager {
 
 			md += `## ${section}\n\n`;
 			for (const entry of sectionEntries) {
+				const typeTag = `[${entry.type}]`;
 				const context = entry.context
-					? `> "${entry.context}" (p. ${entry.annotation.page})\n`
-					: `> (p. ${entry.annotation.page})\n`;
+					? `> "${entry.context}" (p. ${entry.annotation.page}) ${typeTag}\n`
+					: `> (p. ${entry.annotation.page}) ${typeTag}\n`;
 				md += context;
-				md += `→ ![[${entry.pngPath}]]\n\n`;
+				md += `> ![[${entry.pngPath}]]\n\n`;
 			}
 		}
 
 		return md;
+	}
+
+	private async writeExportState(
+		exportDir: string,
+		pdfPath: string,
+		annotations: Annotation[]
+	): Promise<void> {
+		const statePath = normalizePath(`${exportDir}/_export-state.json`);
+
+		// Load existing state if present
+		let state: ExportState = {
+			lastExportDate: new Date().toISOString(),
+			pdfPath,
+			exportedAnnotations: {},
+		};
+
+		const existingFile = this.app.vault.getAbstractFileByPath(statePath);
+		if (existingFile instanceof TFile) {
+			try {
+				const content = await this.app.vault.read(existingFile);
+				const existing = JSON.parse(content) as ExportState;
+				state.exportedAnnotations = existing.exportedAnnotations || {};
+			} catch {
+				// ignore parse errors, start fresh
+			}
+		}
+
+		// Update with current export
+		const now = new Date().toISOString();
+		for (const ann of annotations) {
+			state.exportedAnnotations[ann.id] = {
+				exportDate: now,
+				page: ann.page,
+			};
+		}
+
+		const json = JSON.stringify(state, null, 2);
+		if (existingFile instanceof TFile) {
+			await this.app.vault.modify(existingFile, json);
+		} else {
+			await this.ensureFolder(exportDir);
+			await this.app.vault.create(statePath, json);
+		}
 	}
 
 	private async cleanOrphanedPngs(
