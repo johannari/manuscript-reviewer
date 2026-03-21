@@ -77,12 +77,13 @@ export class ExportManager {
 		for (const ann of annotations) {
 			const pngFilename = `annotation-${ann.id}.png`;
 			const pngPath = normalizePath(`${photoDir}/${pngFilename}`);
-			await this.renderAnnotationPng(ann, pngPath);
 
 			const page = await pdf.getPage(ann.page);
+			await this.renderAnnotationPng(ann, pngPath, page);
+
 			const context = await this.extractNearestText(
 				page,
-				ann.boundingBox.y + ann.boundingBox.height / 2
+				ann.boundingBox
 			);
 			const section = this.determineSection(
 				ann.page,
@@ -156,12 +157,13 @@ export class ExportManager {
 		for (const ann of annotations) {
 			const pngFilename = `annotation-${ann.id}.png`;
 			const pngPath = normalizePath(`${photoDir}/${pngFilename}`);
-			await this.renderAnnotationPng(ann, pngPath);
 
 			const page = await pdf.getPage(ann.page);
+			await this.renderAnnotationPng(ann, pngPath, page);
+
 			const context = await this.extractNearestText(
 				page,
-				ann.boundingBox.y + ann.boundingBox.height / 2
+				ann.boundingBox
 			);
 
 			entries.push({
@@ -225,30 +227,53 @@ export class ExportManager {
 
 	private async renderAnnotationPng(
 		ann: Annotation,
-		outputPath: string
+		outputPath: string,
+		pdfPage?: pdfjsLib.PDFPageProxy
 	): Promise<void> {
-		const padding = 0.02;
+		const padding = 0.15; // 15% padding for surrounding text context
 		const b = ann.boundingBox;
 
+		// Clamp the crop region to page bounds (0-1 normalized)
+		const cropX = Math.max(0, b.x - padding);
+		const cropY = Math.max(0, b.y - padding);
+		const cropRight = Math.min(1, b.x + b.width + padding);
+		const cropBottom = Math.min(1, b.y + b.height + padding);
+		const cropW = cropRight - cropX;
+		const cropH = cropBottom - cropY;
+
 		const renderWidth = 800;
-		const aspectRatio = (b.height + padding * 2) / (b.width + padding * 2);
-		const renderHeight = Math.max(
-			50,
-			Math.round(renderWidth * aspectRatio)
-		);
+		const aspectRatio = cropH / cropW;
+		const renderHeight = Math.max(50, Math.round(renderWidth * aspectRatio));
 
 		const canvas = document.createElement("canvas");
 		canvas.width = renderWidth;
 		canvas.height = renderHeight;
 		const ctx = canvas.getContext("2d")!;
 
-		ctx.fillStyle = "white";
-		ctx.fillRect(0, 0, renderWidth, renderHeight);
+		// Render PDF page crop as background if available
+		if (pdfPage) {
+			const pdfScale = 2; // high-res for crisp text
+			const viewport = pdfPage.getViewport({ scale: pdfScale });
+			const pdfCanvas = document.createElement("canvas");
+			pdfCanvas.width = viewport.width;
+			pdfCanvas.height = viewport.height;
+			const pdfCtx = pdfCanvas.getContext("2d")!;
+			await pdfPage.render({ canvasContext: pdfCtx, viewport }).promise;
 
-		const scaleX = renderWidth / (b.width + padding * 2);
-		const scaleY = renderHeight / (b.height + padding * 2);
-		const offsetX = b.x - padding;
-		const offsetY = b.y - padding;
+			// Crop the relevant region from the PDF page
+			const srcX = cropX * viewport.width;
+			const srcY = cropY * viewport.height;
+			const srcW = cropW * viewport.width;
+			const srcH = cropH * viewport.height;
+			ctx.drawImage(pdfCanvas, srcX, srcY, srcW, srcH, 0, 0, renderWidth, renderHeight);
+		} else {
+			ctx.fillStyle = "white";
+			ctx.fillRect(0, 0, renderWidth, renderHeight);
+		}
+
+		// Overlay strokes on top of the PDF crop
+		const scaleX = renderWidth / cropW;
+		const scaleY = renderHeight / cropH;
 
 		for (const stroke of ann.strokes) {
 			if (stroke.points.length < 2) continue;
@@ -259,8 +284,8 @@ export class ExportManager {
 			const first = stroke.points[0];
 			ctx.beginPath();
 			ctx.moveTo(
-				(first.x - offsetX) * scaleX,
-				(first.y - offsetY) * scaleY
+				(first.x - cropX) * scaleX,
+				(first.y - cropY) * scaleY
 			);
 
 			for (let i = 1; i < stroke.points.length; i++) {
@@ -268,14 +293,14 @@ export class ExportManager {
 				const pressure = Math.max(0.1, p.pressure);
 				ctx.lineWidth = stroke.width * pressure * 2;
 				ctx.lineTo(
-					(p.x - offsetX) * scaleX,
-					(p.y - offsetY) * scaleY
+					(p.x - cropX) * scaleX,
+					(p.y - cropY) * scaleY
 				);
 				ctx.stroke();
 				ctx.beginPath();
 				ctx.moveTo(
-					(p.x - offsetX) * scaleX,
-					(p.y - offsetY) * scaleY
+					(p.x - cropX) * scaleX,
+					(p.y - cropY) * scaleY
 				);
 			}
 		}
@@ -292,44 +317,65 @@ export class ExportManager {
 
 	private async extractNearestText(
 		page: pdfjsLib.PDFPageProxy,
-		normalizedY: number
+		bbox: { x: number; y: number; width: number; height: number }
 	): Promise<string> {
 		const textContent = await page.getTextContent();
 		const viewport = page.getViewport({ scale: 1 });
 		const pageHeight = viewport.height;
-
-		const targetY = normalizedY * pageHeight;
-
-		type TextItemWithTransform = {
-			str: string;
-			transform: number[];
-		};
+		const pageWidth = viewport.width;
 
 		const items = textContent.items.filter(
-			(item): item is TextItemWithTransform =>
-				"str" in item && item.str.trim().length > 0
-		);
+			(item) => "str" in item && (item as any).str.trim().length > 0
+		) as Array<{ str: string; transform: number[]; width: number }>;
 
 		if (items.length === 0) return "";
 
-		// pdf.js transform[5] is the Y position (from bottom), convert to from-top
-		items.sort((a, b) => {
-			const aY = pageHeight - a.transform[5];
-			const bY = pageHeight - b.transform[5];
-			return (
-				Math.abs(aY - targetY) - Math.abs(bY - targetY)
-			);
+		// Convert annotation bbox to page coordinates
+		const annTop = bbox.y * pageHeight;
+		const annBottom = (bbox.y + bbox.height) * pageHeight;
+		const annCenterY = (annTop + annBottom) / 2;
+		const annLeft = bbox.x * pageWidth;
+		const annRight = (bbox.x + bbox.width) * pageWidth;
+
+		// Score each text item by proximity to annotation bbox
+		const scored = items.map((item) => {
+			const itemY = pageHeight - item.transform[5]; // convert from-bottom to from-top
+			const itemX = item.transform[4];
+
+			// Y distance: 0 if overlapping, otherwise distance to nearest edge
+			let yDist = 0;
+			if (itemY < annTop) yDist = annTop - itemY;
+			else if (itemY > annBottom) yDist = itemY - annBottom;
+
+			// X distance: prefer text on the same horizontal region
+			let xDist = 0;
+			if (itemX > annRight) xDist = (itemX - annRight) * 0.5; // less weight on X
+			else if (itemX + (item.width || 0) < annLeft) xDist = (annLeft - itemX) * 0.5;
+
+			return { item, dist: yDist + xDist, y: itemY };
 		});
 
-		// Grab nearest text items to form a passage
-		const nearest = items.slice(0, 5);
-		nearest.sort((a, b) => {
-			const aY = pageHeight - a.transform[5];
-			const bY = pageHeight - b.transform[5];
-			return aY - bY;
-		});
+		scored.sort((a, b) => a.dist - b.dist);
 
-		const text = nearest.map((item) => item.str).join(" ");
+		// Take nearest items, then group by line (similar Y position)
+		const nearest = scored.slice(0, 15);
+		nearest.sort((a, b) => a.y - b.y);
+
+		// Group into lines (items within 3px Y are same line)
+		const lines: string[] = [];
+		let currentLine: string[] = [];
+		let currentLineY = -999;
+		for (const s of nearest) {
+			if (Math.abs(s.y - currentLineY) > 3) {
+				if (currentLine.length > 0) lines.push(currentLine.join(" "));
+				currentLine = [];
+				currentLineY = s.y;
+			}
+			currentLine.push(s.item.str);
+		}
+		if (currentLine.length > 0) lines.push(currentLine.join(" "));
+
+		const text = lines.join(" ");
 		const trimmed =
 			text.length > 200 ? text.substring(0, 200) + "..." : text;
 		return trimmed;
