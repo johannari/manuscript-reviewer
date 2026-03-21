@@ -70,7 +70,7 @@ export default class ManuscriptReviewerPlugin extends Plugin {
 			checkCallback: (checking) => {
 				const view = this.getActivePdfView();
 				if (!view) return false;
-				if (!checking) this.exportAnnotations(view);
+				if (!checking) this.exportAnnotationsFromView(view);
 				return true;
 			},
 		});
@@ -146,7 +146,7 @@ export default class ManuscriptReviewerPlugin extends Plugin {
 		return leaves[0].view as unknown as ManuscriptPdfView;
 	}
 
-	private async exportAnnotations(view: ManuscriptPdfView): Promise<void> {
+	async exportAnnotationsFromView(view: ManuscriptPdfView): Promise<void> {
 		const pdfPath = view.getPdfPath();
 		if (!pdfPath) {
 			new Notice("No PDF is open");
