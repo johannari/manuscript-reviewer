@@ -475,5 +475,17 @@ export class ManuscriptPdfView extends ItemView {
 				this.annotationManager.setPenWidth(w.value);
 			});
 		}
+
+		// Separator
+		this.toolbar.createDiv({ cls: "toolbar-separator" });
+
+		// Export button
+		const exportBtn = this.toolbar.createEl("button", {
+			text: "Export",
+			title: "Export annotations as Markdown",
+		});
+		exportBtn.addEventListener("click", () => {
+			this.plugin.exportAnnotationsFromView(this);
+		});
 	}
 }
