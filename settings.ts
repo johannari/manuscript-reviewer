@@ -6,6 +6,9 @@ export interface ManuscriptReviewerSettings {
 	penColor: string;
 	penWidth: number;
 	strokeGroupingTimeout: number;
+	postExportEnabled: boolean;
+	postExportCwd: string;
+	postExportCommand: string;
 }
 
 export const DEFAULT_SETTINGS: ManuscriptReviewerSettings = {
@@ -13,6 +16,9 @@ export const DEFAULT_SETTINGS: ManuscriptReviewerSettings = {
 	penColor: "#ff0000",
 	penWidth: 2,
 	strokeGroupingTimeout: 1500,
+	postExportEnabled: false,
+	postExportCwd: "",
+	postExportCommand: "make commit-annotations",
 };
 
 export class ManuscriptReviewerSettingTab extends PluginSettingTab {
@@ -83,6 +89,50 @@ export class ManuscriptReviewerSettingTab extends PluginSettingTab {
 					.setDynamicTooltip()
 					.onChange(async (value) => {
 						this.plugin.settings.strokeGroupingTimeout = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		containerEl.createEl("h3", { text: "Post-export sync" });
+
+		new Setting(containerEl)
+			.setName("Enable post-export sync")
+			.setDesc(
+				"Automatically run a shell command after exporting annotations"
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.postExportEnabled)
+					.onChange(async (value) => {
+						this.plugin.settings.postExportEnabled = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Git repo path")
+			.setDesc("Absolute path to the git repository")
+			.addText((text) =>
+				text
+					.setPlaceholder(
+						"~/code/non-engineering-engineering-leadership"
+					)
+					.setValue(this.plugin.settings.postExportCwd)
+					.onChange(async (value) => {
+						this.plugin.settings.postExportCwd = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Shell command")
+			.setDesc("Command to run after export")
+			.addText((text) =>
+				text
+					.setPlaceholder("make commit-annotations")
+					.setValue(this.plugin.settings.postExportCommand)
+					.onChange(async (value) => {
+						this.plugin.settings.postExportCommand = value;
 						await this.plugin.saveSettings();
 					})
 			);

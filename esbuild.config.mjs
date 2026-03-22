@@ -34,7 +34,7 @@ esbuild
 	.build({
 		entryPoints: ["main.ts"],
 		bundle: true,
-		external: ["obsidian"],
+		external: ["obsidian", "child_process", "util"],
 		format: "cjs",
 		platform: "browser",
 		target: "es2018",

@@ -1,4 +1,6 @@
-import { Notice, Plugin, TFile, FuzzySuggestModal, normalizePath } from "obsidian";
+import { Notice, Platform, Plugin, TFile, FuzzySuggestModal, normalizePath } from "obsidian";
+import { exec } from "child_process";
+import { promisify } from "util";
 import {
 	ManuscriptReviewerSettings,
 	DEFAULT_SETTINGS,
@@ -175,8 +177,42 @@ export default class ManuscriptReviewerPlugin extends Plugin {
 				exportDir
 			);
 			new Notice(`Exported annotations to ${path}`);
+			await this.runPostExportSync();
 		} catch (e) {
 			new Notice(`Export failed: ${(e as Error).message}`);
+		}
+	}
+
+	private async runPostExportSync(): Promise<void> {
+		if (!this.settings.postExportEnabled || !Platform.isDesktop) {
+			return;
+		}
+
+		let cwd = this.settings.postExportCwd;
+		if (cwd.startsWith("~")) {
+			cwd = cwd.replace("~", process.env.HOME || "");
+		}
+
+		if (!cwd) {
+			new Notice("Post-export sync: no repo path configured");
+			return;
+		}
+
+		const command = this.settings.postExportCommand;
+		new Notice("Syncing annotations to repo...");
+
+		try {
+			const execAsync = promisify(exec);
+			await execAsync(command, { cwd, timeout: 30000 });
+			new Notice("Annotations synced and pushed to repo");
+		} catch (e: any) {
+			const stderr = e.stderr || "";
+			if (stderr.includes("nothing to commit")) {
+				new Notice("No new annotations to sync");
+			} else {
+				const msg = (e.message || String(e)).slice(0, 200);
+				new Notice(`Post-export sync failed: ${msg}`);
+			}
 		}
 	}
 }
