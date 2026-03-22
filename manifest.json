@@ -1,9 +1,9 @@
 {
 	"id": "manuscript-reviewer",
 	"name": "Manuscript Reviewer",
-	"version": "2.4.0",
+	"version": "2.5.0",
 	"minAppVersion": "1.5.0",
-	"description": "Annotate any PDF with Apple Pencil or stylus — handwritten margin notes saved as sidecar JSON, exportable as Markdown with embedded PNG crops",
+	"description": "Annotate any PDF with Apple Pencil or stylus — handwritten margin notes saved as sidecar JSON, exportable as Markdown with full-page composite PNGs",
 	"author": "johannari",
 	"authorUrl": "https://github.com/johannari",
 	"isDesktopOnly": false

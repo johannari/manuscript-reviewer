@@ -178,40 +178,44 @@ export class ExportManager {
 		const pdfBuf = await this.app.vault.readBinary(pdfFile);
 		const pdf = await pdfjsLib.getDocument({ data: pdfBuf }).promise;
 
-		// Render annotation PNGs and extract context
+		// Group annotations by page
+		const pageGroups = new Map<number, Annotation[]>();
+		for (const ann of annotations) {
+			const list = pageGroups.get(ann.page) || [];
+			list.push(ann);
+			pageGroups.set(ann.page, list);
+		}
+
+		// Render one full-page PNG per annotated page, collect context per annotation
 		const entries: {
 			annotation: Annotation;
-			pngPath: string;
+			pagePngPath: string;
 			context: string;
 			section: string;
 			type: AnnotationType;
 		}[] = [];
 
-		for (const ann of annotations) {
-			const pngFilename = `annotation-${ann.id}.png`;
-			const pngPath = normalizePath(`${photoDir}/${pngFilename}`);
+		for (const [pageNum, pageAnns] of [...pageGroups.entries()].sort((a, b) => a[0] - b[0])) {
+			const pngFilename = `page-${pageNum}.png`;
+			const pngFullPath = normalizePath(`${photoDir}/${pngFilename}`);
 
-			const page = await pdf.getPage(ann.page);
-			await this.renderAnnotationPng(ann, pngPath, page);
+			const pdfPage = await pdf.getPage(pageNum);
+			await this.renderPagePng(pageAnns, pngFullPath, pdfPage);
 
-			const context = await this.extractNearestText(
-				page,
-				ann.boundingBox
-			);
-			const section = this.determineSection(
-				ann.page,
-				ann.boundingBox.y,
-				chapter
-			);
-			const type = this.classifyAnnotation(ann);
+			const pagePngPath = `photos/${chapter.id}/${pngFilename}`;
+			for (const ann of pageAnns) {
+				const context = await this.extractNearestText(pdfPage, ann.boundingBox);
+				const section = this.determineSection(ann.page, ann.boundingBox.y, chapter);
+				const type = this.classifyAnnotation(ann);
 
-			entries.push({
-				annotation: ann,
-				pngPath: `photos/${chapter.id}/${pngFilename}`,
-				context,
-				section,
-				type,
-			});
+				entries.push({
+					annotation: ann,
+					pagePngPath,
+					context,
+					section,
+					type,
+				});
+			}
 		}
 
 		// Generate markdown
@@ -269,48 +273,54 @@ export class ExportManager {
 		const pdfBuf = await this.app.vault.readBinary(pdfFile);
 		const pdf = await pdfjsLib.getDocument({ data: pdfBuf }).promise;
 
-		const entries: {
-			annotation: Annotation;
+		// Group annotations by page
+		const pageGroups = new Map<number, Annotation[]>();
+		for (const ann of annotations) {
+			const list = pageGroups.get(ann.page) || [];
+			list.push(ann);
+			pageGroups.set(ann.page, list);
+		}
+
+		// Render one full-page PNG per annotated page, collect context per annotation
+		const pageEntries: {
+			page: number;
 			pngPath: string;
-			context: string;
-			type: AnnotationType;
+			annotations: { context: string; type: AnnotationType }[];
 		}[] = [];
 
-		for (const ann of annotations) {
-			const pngFilename = `annotation-${ann.id}.png`;
-			const pngPath = normalizePath(`${photoDir}/${pngFilename}`);
+		for (const [pageNum, pageAnns] of [...pageGroups.entries()].sort((a, b) => a[0] - b[0])) {
+			const pngFilename = `page-${pageNum}.png`;
+			const pngFullPath = normalizePath(`${photoDir}/${pngFilename}`);
 
-			const page = await pdf.getPage(ann.page);
-			await this.renderAnnotationPng(ann, pngPath, page);
+			const pdfPage = await pdf.getPage(pageNum);
+			await this.renderPagePng(pageAnns, pngFullPath, pdfPage);
 
-			const context = await this.extractNearestText(
-				page,
-				ann.boundingBox
-			);
-			const type = this.classifyAnnotation(ann);
+			const annEntries: { context: string; type: AnnotationType }[] = [];
+			for (const ann of pageAnns) {
+				const context = await this.extractNearestText(pdfPage, ann.boundingBox);
+				const type = this.classifyAnnotation(ann);
+				annEntries.push({ context, type });
+			}
 
-			entries.push({
-				annotation: ann,
+			pageEntries.push({
+				page: pageNum,
 				pngPath: `photos/${pdfName}/${pngFilename}`,
-				context,
-				type,
+				annotations: annEntries,
 			});
 		}
 
-		// Generate markdown with type tags
+		// Generate markdown: one image per page, annotation contexts listed below
 		let md = `# Annotations: ${pdfName}\n\n`;
-		let currentPage = -1;
-		for (const entry of entries) {
-			if (entry.annotation.page !== currentPage) {
-				currentPage = entry.annotation.page;
-				md += `## Page ${currentPage}\n\n`;
+		for (const entry of pageEntries) {
+			md += `## Page ${entry.page}\n\n`;
+			md += `![[${entry.pngPath}]]\n\n`;
+			for (const ann of entry.annotations) {
+				const typeTag = `[${ann.type}]`;
+				const context = ann.context
+					? `> "${ann.context}" (p. ${entry.page}) ${typeTag}\n\n`
+					: `> (p. ${entry.page}) ${typeTag}\n\n`;
+				md += context;
 			}
-			const typeTag = `[${entry.type}]`;
-			const context = entry.context
-				? `> "${entry.context}" (p. ${entry.annotation.page}) ${typeTag}\n`
-				: `> (p. ${entry.annotation.page}) ${typeTag}\n`;
-			md += context;
-			md += `> ![[${entry.pngPath}]]\n\n`;
 		}
 
 		await this.ensureFolder(
@@ -353,101 +363,66 @@ export class ExportManager {
 		return results;
 	}
 
-	private async renderAnnotationPng(
-		ann: Annotation,
+	/**
+	 * Render a full-page composite PNG with ALL annotations on that page overlaid.
+	 * One image per annotated page — no cropping, no fragmentation.
+	 */
+	private async renderPagePng(
+		pageAnnotations: Annotation[],
 		outputPath: string,
-		pdfPage?: pdfjsLib.PDFPageProxy
+		pdfPage: pdfjsLib.PDFPageProxy
 	): Promise<void> {
-		const b = ann.boundingBox;
-		const diagonal = Math.sqrt(b.width ** 2 + b.height ** 2);
+		const pdfScale = 2;
+		const viewport = pdfPage.getViewport({ scale: pdfScale });
 
-		// Scale padding inversely with annotation size
-		// Small annotations get more padding (up to 30%), large stay at 15%
-		const basePadding = 0.15;
-		const padding = diagonal < 0.05
-			? Math.min(0.30, basePadding + (0.05 - diagonal) * 3)
-			: basePadding;
-
-		// For margin annotations (left or right edge), use full page width
-		const isMarginAnnotation = b.x < 0.15 || (b.x + b.width) > 0.85;
-
-		// Clamp the crop region to page bounds (0-1 normalized)
-		let cropX: number, cropRight: number;
-		if (isMarginAnnotation) {
-			// Full width so the text being referenced is visible
-			cropX = 0;
-			cropRight = 1;
-		} else {
-			cropX = Math.max(0, b.x - padding);
-			cropRight = Math.min(1, b.x + b.width + padding);
-		}
-		const cropY = Math.max(0, b.y - padding);
-		const cropBottom = Math.min(1, b.y + b.height + padding);
-		const cropW = cropRight - cropX;
-		const cropH = cropBottom - cropY;
-
+		// Render at 800px wide, preserving aspect ratio
 		const renderWidth = 800;
-		const aspectRatio = cropH / cropW;
-		// Minimum height of 100px so tiny marks aren't microscopic
-		const renderHeight = Math.max(100, Math.round(renderWidth * aspectRatio));
+		const renderHeight = Math.round(
+			(viewport.height / viewport.width) * renderWidth
+		);
 
 		const canvas = document.createElement("canvas");
 		canvas.width = renderWidth;
 		canvas.height = renderHeight;
 		const ctx = canvas.getContext("2d")!;
 
-		// Render PDF page crop as background if available
-		if (pdfPage) {
-			const pdfScale = 2; // high-res for crisp text
-			const viewport = pdfPage.getViewport({ scale: pdfScale });
-			const pdfCanvas = document.createElement("canvas");
-			pdfCanvas.width = viewport.width;
-			pdfCanvas.height = viewport.height;
-			const pdfCtx = pdfCanvas.getContext("2d")!;
-			await pdfPage.render({ canvasContext: pdfCtx, viewport }).promise;
+		// Render full PDF page as background
+		const pdfCanvas = document.createElement("canvas");
+		pdfCanvas.width = viewport.width;
+		pdfCanvas.height = viewport.height;
+		const pdfCtx = pdfCanvas.getContext("2d")!;
+		await pdfPage.render({ canvasContext: pdfCtx, viewport }).promise;
 
-			// Crop the relevant region from the PDF page
-			const srcX = cropX * viewport.width;
-			const srcY = cropY * viewport.height;
-			const srcW = cropW * viewport.width;
-			const srcH = cropH * viewport.height;
-			ctx.drawImage(pdfCanvas, srcX, srcY, srcW, srcH, 0, 0, renderWidth, renderHeight);
-		} else {
-			ctx.fillStyle = "white";
-			ctx.fillRect(0, 0, renderWidth, renderHeight);
-		}
+		ctx.drawImage(
+			pdfCanvas,
+			0, 0, viewport.width, viewport.height,
+			0, 0, renderWidth, renderHeight
+		);
 
-		// Overlay strokes on top of the PDF crop
-		const scaleX = renderWidth / cropW;
-		const scaleY = renderHeight / cropH;
+		// Overlay strokes from ALL annotations on this page
+		const scaleX = renderWidth;  // normalized coords (0-1) → pixels
+		const scaleY = renderHeight;
 
-		for (const stroke of ann.strokes) {
-			if (stroke.points.length < 2) continue;
-			ctx.strokeStyle = stroke.color;
-			ctx.lineCap = "round";
-			ctx.lineJoin = "round";
+		for (const ann of pageAnnotations) {
+			for (const stroke of ann.strokes) {
+				if (stroke.points.length < 2) continue;
+				ctx.strokeStyle = stroke.color;
+				ctx.lineCap = "round";
+				ctx.lineJoin = "round";
 
-			const first = stroke.points[0];
-			ctx.beginPath();
-			ctx.moveTo(
-				(first.x - cropX) * scaleX,
-				(first.y - cropY) * scaleY
-			);
-
-			for (let i = 1; i < stroke.points.length; i++) {
-				const p = stroke.points[i];
-				const pressure = Math.max(0.1, p.pressure);
-				ctx.lineWidth = stroke.width * pressure * 2;
-				ctx.lineTo(
-					(p.x - cropX) * scaleX,
-					(p.y - cropY) * scaleY
-				);
-				ctx.stroke();
+				const first = stroke.points[0];
 				ctx.beginPath();
-				ctx.moveTo(
-					(p.x - cropX) * scaleX,
-					(p.y - cropY) * scaleY
-				);
+				ctx.moveTo(first.x * scaleX, first.y * scaleY);
+
+				for (let i = 1; i < stroke.points.length; i++) {
+					const p = stroke.points[i];
+					const pressure = Math.max(0.1, p.pressure);
+					ctx.lineWidth = stroke.width * pressure * 2;
+					ctx.lineTo(p.x * scaleX, p.y * scaleY);
+					ctx.stroke();
+					ctx.beginPath();
+					ctx.moveTo(p.x * scaleX, p.y * scaleY);
+				}
 			}
 		}
 
@@ -566,7 +541,7 @@ export class ExportManager {
 		chapter: ChapterConfig,
 		entries: {
 			annotation: Annotation;
-			pngPath: string;
+			pagePngPath: string;
 			context: string;
 			section: string;
 			type: AnnotationType;
@@ -597,13 +572,19 @@ export class ExportManager {
 			if (!sectionEntries || sectionEntries.length === 0) continue;
 
 			md += `## ${section}\n\n`;
+
+			// Show page image once per page within this section
+			const pagesShown = new Set<string>();
 			for (const entry of sectionEntries) {
+				if (!pagesShown.has(entry.pagePngPath)) {
+					md += `![[${entry.pagePngPath}]]\n\n`;
+					pagesShown.add(entry.pagePngPath);
+				}
 				const typeTag = `[${entry.type}]`;
 				const context = entry.context
-					? `> "${entry.context}" (p. ${entry.annotation.page}) ${typeTag}\n`
-					: `> (p. ${entry.annotation.page}) ${typeTag}\n`;
+					? `> "${entry.context}" (p. ${entry.annotation.page}) ${typeTag}\n\n`
+					: `> (p. ${entry.annotation.page}) ${typeTag}\n\n`;
 				md += context;
-				md += `> ![[${entry.pngPath}]]\n\n`;
 			}
 		}
 
@@ -657,7 +638,7 @@ export class ExportManager {
 		photoDir: string,
 		annotations: Annotation[]
 	): Promise<void> {
-		const validIds = new Set(annotations.map((a) => a.id));
+		const validPages = new Set(annotations.map((a) => a.page));
 		const folder = this.app.vault.getAbstractFileByPath(photoDir);
 		if (!folder) return;
 
@@ -668,8 +649,16 @@ export class ExportManager {
 		);
 
 		for (const file of files) {
-			const match = file.basename.match(/^annotation-([a-f0-9]+)$/);
-			if (match && !validIds.has(match[1])) {
+			// Clean up old per-annotation PNGs (from previous versions)
+			const annMatch = file.basename.match(/^annotation-([a-f0-9]+)$/);
+			if (annMatch) {
+				await this.app.vault.delete(file);
+				continue;
+			}
+
+			// Clean up orphaned page PNGs (pages with no annotations)
+			const pageMatch = file.basename.match(/^page-(\d+)$/);
+			if (pageMatch && !validPages.has(parseInt(pageMatch[1]))) {
 				await this.app.vault.delete(file);
 			}
 		}
